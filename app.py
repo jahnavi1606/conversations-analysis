@@ -10,13 +10,8 @@ import os
 # Load the sentiment analysis pipeline
 @st.cache_resource
 def load_sentiment_pipeline():
-    local_model_path = "./twitter-roberta-sentiment"
-    if os.path.exists(local_model_path):
-        return pipeline("sentiment-analysis", model=local_model_path)
-    else:
-        pipe = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
-        pipe.save_pretrained(local_model_path)
-        return pipe
+    # Use a smaller, faster model
+    return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
 
 # File loading function
 @st.cache_data
@@ -40,11 +35,9 @@ def analyze_sentiment(conversations, batch_size=128):
     sentiment_pipeline = load_sentiment_pipeline()
     sentiments = []
     for i in range(0, len(conversations), batch_size):
-        batch = [text[:256] for text in conversations[i:i + batch_size]]
+        batch = [text[:512] for text in conversations[i:i + batch_size]]  # Increased text length limit
         results = sentiment_pipeline(batch)
-        sentiments.extend(["Positive" if r['label'] == "LABEL_0" else 
-                           "Neutral" if r['label'] == "LABEL_1" else 
-                           "Negative" for r in results])
+        sentiments.extend(["Positive" if r['label'] == "POSITIVE" else "Negative" for r in results])
     return sentiments
 
 # Clustering
