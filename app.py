@@ -1,124 +1,146 @@
 import streamlit as st
 import pandas as pd
-from textblob import TextBlob
+from transformers import pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Load the file and return a DataFrame
+# Load the sentiment analysis pipeline using a model that supports Neutral sentiment
+@st.cache_resource
+def load_sentiment_pipeline():
+    return pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
+
+# Read and validate the uploaded file
+@st.cache_data
 def load_file(file):
     try:
         if file.name.endswith(".jsonl"):
             df = pd.read_json(file, lines=True)
-        else:
+        elif file.name.endswith(".json"):
             df = pd.read_json(file)
+        else:
+            st.error("Unsupported file format. Please upload a JSON or JSONL file.")
+            return None
         return df
     except Exception as e:
         st.error(f"Error reading file: {e}")
         return None
 
-# Perform sentiment analysis using TextBlob
-def simple_sentiment_analysis(texts):
-    def get_sentiment(text):
-        try:
-            analysis = TextBlob(text)
-            if analysis.sentiment.polarity > 0:
-                return "Positive"
-            elif analysis.sentiment.polarity < 0:
-                return "Negative"
-            else:
-                return "Neutral"
-        except Exception:
-            return "Unknown"
+# Sentiment analysis with Neutral support
+def get_sentiment(text):
+    """Get sentiment using a model that includes neutral sentiment."""
+    result = sentiment_analyzer(text[:512])[0]  # Truncate to avoid token limit
+    label = result['label']
     
-    return [get_sentiment(text) for text in texts]
+    # Assign sentiment labels based on the returned 'label'
+    if label == "LABEL_2":  # Negative sentiment (model-specific)
+        return "Negative"
+    elif label == "LABEL_1":  # Neutral sentiment
+        return "Neutral"
+    else:  # Positive sentiment (model-specific)
+        return "Positive"
 
-# Cluster conversations using TF-IDF and MiniBatchKMeans
+# Analyze sentiment (batch processing and truncation)
+@st.cache_data
+def analyze_sentiment(conversations, batch_size=64):
+    sentiment_pipeline = load_sentiment_pipeline()
+    sentiments = []
+    for i in range(0, len(conversations), batch_size):
+        batch = conversations[i:i+batch_size]
+        batch = [text[:256] for text in batch]  # Truncate text to 256 characters
+        results = sentiment_pipeline(batch)
+        
+        for res in results:
+            label = res['label']
+            # Map labels to Positive, Negative, Neutral
+            if label == "LABEL_2":
+                sentiments.append("Negative")
+            elif label == "LABEL_1":
+                sentiments.append("Neutral")
+            else:
+                sentiments.append("Positive")
+    return sentiments
+
+# Cluster conversations into topics
+@st.cache_data
 def cluster_conversations(conversations, num_clusters=5):
-    vectorizer = TfidfVectorizer(max_features=50, stop_words="english")
-    try:
-        tfidf_matrix = vectorizer.fit_transform(conversations)
-        kmeans = MiniBatchKMeans(n_clusters=num_clusters, random_state=42, batch_size=50)
-        clusters = kmeans.fit_predict(tfidf_matrix)
+    vectorizer = TfidfVectorizer(max_features=300, stop_words="english")  # Fewer features for speed
+    tfidf_matrix = vectorizer.fit_transform(conversations)
 
-        # Define topic labels
-        topic_labels = {
-            0: "Topic 1",
-            1: "Topic 2",
-            2: "Topic 3",
-            3: "Topic 4",
-            4: "Topic 5"
-        }
-        return [topic_labels.get(cluster, "Other") for cluster in clusters]
-    except Exception as e:
-        st.error(f"Error clustering conversations: {e}")
-        return ["Unknown"] * len(conversations)
+    # Use MiniBatchKMeans for faster clustering
+    kmeans = MiniBatchKMeans(n_clusters=num_clusters, random_state=42, batch_size=100)
+    clusters = kmeans.fit_predict(tfidf_matrix)
 
-# Preprocess conversation data for analysis
-def preprocess_conversations(df):
-    if "conversations" in df.columns:
-        df["conversations"] = df["conversations"].apply(
-            lambda x: " ".join([c["value"] for c in x]) if isinstance(x, list) else str(x)
-        )
-    else:
-        st.warning("The input file must contain a 'conversations' column.")
-    return df
+    # Assign topic labels
+    topic_labels = {
+        0: "Programming Practices",
+        1: "Technical Issues",
+        2: "App Development",
+        3: "Customer Feedback",
+        4: "Misc"
+    }
 
-# Counts screen: Display aggregated counts
-def counts_page(df):
-    st.header("Counts Overview")
+    # Assign "Misc" for isolated conversations
+    similarity_matrix = cosine_similarity(tfidf_matrix)
+    for idx, row in enumerate(similarity_matrix):
+        if sum(row > 0.2) <= 1:  # Threshold for isolation
+            clusters[idx] = len(topic_labels) - 1  # Assign "Misc"
 
-    # Topic Counts
-    st.subheader("Topic Count")
-    topic_counts = df["topic"].value_counts().reset_index()
-    topic_counts.columns = ["Topic", "Count"]
-    st.table(topic_counts)
+    topics = [topic_labels[cluster] for cluster in clusters]
+    return topics, topic_labels
 
-    # Sentiment Counts
-    st.subheader("Sentiment Count")
-    sentiment_counts = df["sentiment"].value_counts().reset_index()
-    sentiment_counts.columns = ["Sentiment", "Count"]
-    st.table(sentiment_counts)
+# Streamlit Layout
+st.title("Conversation Analysis App")
 
-# Sessions screen: Display conversation details
-def sessions_page(df):
-    st.header("Sessions Overview")
-    
-    # Paginated view of conversations
-    st.subheader("Conversation Details")
-    page_size = 50
-    page_number = st.number_input("Page Number", min_value=1, max_value=(len(df) // page_size) + 1, step=1)
-    start_idx = (page_number - 1) * page_size
-    end_idx = start_idx + page_size
-    
-    paginated_df = df.iloc[start_idx:end_idx]
-    st.table(paginated_df[["conversations", "topic", "sentiment"]].reset_index().rename(
-        columns={"index": "Conversation No", "conversations": "Conversation", "topic": "Topic", "sentiment": "Sentiment"}
-    ))
+# File uploader
+uploaded_file = st.file_uploader("Upload a JSONL or JSON file", type=["jsonl", "json"])
 
-# Main application
-def main():
-    st.title("Conversation Analyzer")
-    
-    uploaded_file = st.file_uploader("Upload JSON/JSONL", type=["jsonl", "json"])
-    if uploaded_file:
-        df = load_file(uploaded_file)
-        if df is not None:
-            df = preprocess_conversations(df)
-            if "conversations" in df.columns:
-                # Generate topics and sentiments if not already present
-                if "topic" not in df.columns:
-                    df["topic"] = cluster_conversations(df["conversations"])
-                if "sentiment" not in df.columns:
-                    df["sentiment"] = simple_sentiment_analysis(df["conversations"])
-                
-                # Page navigation
-                page = st.sidebar.radio("Select Page", ["Counts", "Sessions"])
-                if page == "Counts":
-                    counts_page(df)
-                elif page == "Sessions":
-                    sessions_page(df)
-            else:
-                st.error("The uploaded file does not contain a 'conversations' column.")
+if uploaded_file:
+    # Load the data
+    df = load_file(uploaded_file)
 
-if __name__ == "__main__":
-    main()
+    if df is not None:
+        st.success("File loaded successfully!")
+
+        # Ensure 'conversations' column exists and preprocess it
+        if "conversations" in df.columns:
+            df["conversations"] = df["conversations"].apply(
+                lambda x: " ".join([c["value"] for c in x]) if isinstance(x, list) else str(x)
+            )
+
+            # Sidebar navigation
+            st.sidebar.title("Navigation")
+            screen = st.sidebar.radio("Choose a screen", ["Counts", "Sessions"])
+
+            # Cluster conversations into topics (if not already done)
+            if "topic" not in df.columns:
+                topics, topic_labels = cluster_conversations(df["conversations"])
+                df["topic"] = topics
+
+            # Analyze sentiment for each conversation (if not already done)
+            if "sentiment" not in df.columns:
+                df["sentiment"] = analyze_sentiment(df["conversations"])
+
+            if screen == "Counts":
+                # Screen 1: Counts
+                st.header("Counts")
+                st.subheader("Conversation Count by Topic")
+                topic_counts = df["topic"].value_counts()
+                st.write(topic_counts)
+
+                st.subheader("Conversation Count by Sentiment")
+                sentiment_counts = df["sentiment"].value_counts()
+                st.write(sentiment_counts)
+
+            elif screen == "Sessions":
+                # Screen 2: Sessions
+                st.header("Sessions")
+                st.subheader("Conversations with Topics and Sentiments")
+                page = st.slider("Select Page", 1, (len(df) // 50) + 1, 1)
+                start_idx = (page - 1) * 50
+                end_idx = start_idx + 50
+                st.write(df[["conversations", "topic", "sentiment"]].iloc[start_idx:end_idx])
+        else:
+            st.error("The uploaded file does not contain a 'conversations' column.")
+else:
+    st.info("Please upload a file to begin analysis.")
