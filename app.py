@@ -42,7 +42,7 @@ def get_sentiment(text):
 
 # Analyze sentiment (batch processing and truncation)
 @st.cache_data
-def analyze_sentiment(conversations, batch_size=64):
+def analyze_sentiment(conversations, batch_size=10):
     sentiment_pipeline = load_sentiment_pipeline()
     sentiments = []
     for i in range(0, len(conversations), batch_size):
