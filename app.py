@@ -5,11 +5,20 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm  # Progress bar for sentiment analysis
+import os
 
 # Load the sentiment analysis pipeline
 @st.cache_resource
 def load_sentiment_pipeline():
-    return pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
+    # Check if the model is locally available
+    local_model_path = "./twitter-roberta-sentiment"
+    if os.path.exists(local_model_path):
+        return pipeline("sentiment-analysis", model=local_model_path)
+    else:
+        # Download and cache the model if not found locally
+        pipe = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
+        pipe.save_pretrained(local_model_path)
+        return pipe
 
 # File loading function
 @st.cache_data
@@ -29,27 +38,21 @@ def load_file(file):
 
 # Sentiment analysis
 @st.cache_data
-def analyze_sentiment(conversations, batch_size=32):
+def analyze_sentiment(conversations, batch_size=128):  # Increased batch size for faster processing
     sentiment_pipeline = load_sentiment_pipeline()
     sentiments = []
-    for i in tqdm(range(0, len(conversations), batch_size), desc="Processing Sentiment"):
-        batch = conversations[i:i+batch_size]
-        batch = [text[:256] for text in batch]
+    for i in range(0, len(conversations), batch_size):
+        batch = [text[:256] for text in conversations[i:i + batch_size]]
         results = sentiment_pipeline(batch)
-        for res in results:
-            label = res['label']
-            if label == "LABEL_2":
-                sentiments.append("Negative")
-            elif label == "LABEL_1":
-                sentiments.append("Neutral")
-            else:
-                sentiments.append("Positive")
+        sentiments.extend(["Positive" if r['label'] == "LABEL_0" else 
+                           "Neutral" if r['label'] == "LABEL_1" else 
+                           "Negative" for r in results])
     return sentiments
 
 # Clustering
 @st.cache_data
 def cluster_conversations(conversations, num_clusters=5):
-    vectorizer = TfidfVectorizer(max_features=200, stop_words="english")
+    vectorizer = TfidfVectorizer(max_features=100, stop_words="english")
     tfidf_matrix = vectorizer.fit_transform(conversations)
     kmeans = MiniBatchKMeans(n_clusters=num_clusters, random_state=42, batch_size=50)
     clusters = kmeans.fit_predict(tfidf_matrix)
@@ -61,6 +64,7 @@ def cluster_conversations(conversations, num_clusters=5):
     topics = [topic_labels[cluster] for cluster in clusters]
     return topics
 
+# Streamlit app interface
 st.title("Conversation Analysis App")
 
 uploaded_file = st.file_uploader("Upload JSON/JSONL file", type=["jsonl", "json"])
@@ -74,13 +78,19 @@ if uploaded_file:
                 lambda x: " ".join([c["value"] for c in x]) if isinstance(x, list) else str(x)
             )
             if "topic" not in df.columns:
+                st.info("Clustering conversations. This might take a few moments...")
                 df["topic"] = cluster_conversations(df["conversations"])
             if "sentiment" not in df.columns:
+                st.info("Analyzing sentiment. Please wait...")
                 df["sentiment"] = analyze_sentiment(df["conversations"])
             st.write(df.head())
+            st.download_button(
+                label="Download Results as CSV",
+                data=df.to_csv(index=False),
+                file_name="conversation_analysis_results.csv",
+                mime="text/csv",
+            )
         else:
             st.error("Missing 'conversations' column.")
 else:
     st.info("Upload a file to analyze.")
-
-
