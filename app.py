@@ -4,18 +4,16 @@ from transformers import pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import cosine_similarity
-from tqdm import tqdm  # Progress bar for sentiment analysis
+from tqdm import tqdm
 import os
 
 # Load the sentiment analysis pipeline
 @st.cache_resource
 def load_sentiment_pipeline():
-    # Check if the model is locally available
     local_model_path = "./twitter-roberta-sentiment"
     if os.path.exists(local_model_path):
         return pipeline("sentiment-analysis", model=local_model_path)
     else:
-        # Download and cache the model if not found locally
         pipe = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
         pipe.save_pretrained(local_model_path)
         return pipe
@@ -38,7 +36,7 @@ def load_file(file):
 
 # Sentiment analysis
 @st.cache_data
-def analyze_sentiment(conversations, batch_size=128):  # Increased batch size for faster processing
+def analyze_sentiment(conversations, batch_size=128):
     sentiment_pipeline = load_sentiment_pipeline()
     sentiments = []
     for i in range(0, len(conversations), batch_size):
