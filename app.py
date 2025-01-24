@@ -8,7 +8,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Load the sentiment analysis pipeline using a model that supports Neutral sentiment
 @st.cache_resource
 def load_sentiment_pipeline():
-    return pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment")
+    return pipeline("sentiment-analysis",model="distilbert-base-uncased")
+  
+
 
 # Read and validate the uploaded file
 @st.cache_data
